@@ -1,0 +1,387 @@
+// Client-Generator database schema (PostgreSQL / Supabase).
+// Phase 1: CRM, approvals, projects, websites, workflow history and job queue.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum LeadStatus {
+  NEW_LEAD
+  ANALYZED
+  QUALIFIED
+  CONTACTED
+  INTERESTED
+  PROPOSAL_SENT
+  ACCEPTED
+  IN_DEVELOPMENT
+  REVIEW
+  DELIVERED
+  REJECTED
+}
+
+/// A = no website, B = poor website, C = website opportunity.
+enum ProspectType {
+  UNKNOWN
+  NO_WEBSITE
+  POOR_WEBSITE
+  WEBSITE_OPPORTUNITY
+}
+
+enum BusinessCategory {
+  DOCTOR
+  DENTIST
+  CLINIC
+  RESTAURANT
+  CAFE
+  FAST_FOOD
+  PHARMACY
+  BAKERY
+  BEAUTY_SALON
+  BARBERSHOP
+  HOTEL
+  GUEST_HOUSE
+  REAL_ESTATE
+  LAWYER
+  ACCOUNTING
+  LOCAL_SHOP
+  SERVICE_PROVIDER
+  OTHER
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum LeadSource {
+  MANUAL
+  GOOGLE_PLACES
+  IMPORT
+}
+
+enum ApprovalAction {
+  QUALIFY_LEAD
+  CONTACT_BUSINESS
+  CREATE_PROJECT
+  PUBLISH_WEBSITE
+  SHARE_CREDENTIALS
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum AgentKind {
+  RESEARCH
+  QUALIFICATION
+  DESIGN
+  DEVELOPMENT
+  QA
+  DELIVERY
+}
+
+enum RunStatus {
+  QUEUED
+  RUNNING
+  WAITING_APPROVAL
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum ProjectStatus {
+  PLANNED
+  IN_PROGRESS
+  REVIEW
+  DELIVERED
+  CANCELLED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  BLOCKED
+  DONE
+}
+
+enum DeploymentStatus {
+  NOT_DEPLOYED
+  BUILDING
+  PREVIEW
+  PRODUCTION
+  FAILED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  DEAD
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+model TeamMember {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  role      String   @default("member")
+  createdAt DateTime @default(now())
+  leads     Lead[]
+}
+
+model Lead {
+  id              String           @id @default(cuid())
+  name            String
+  category        BusinessCategory @default(OTHER)
+  prospectType    ProspectType     @default(UNKNOWN)
+  status          LeadStatus       @default(NEW_LEAD)
+  priority        Priority         @default(MEDIUM)
+  /// 0-100 lead score (rule-based until the AI analysis runs).
+  score           Int?
+  city            String?
+  country         String?
+  neighborhood    String?
+  address         String?
+  phone           String?
+  email           String?
+  websiteUrl      String?
+  googleMapsUrl   String?
+  googlePlaceId   String?          @unique
+  googleRating    Float?
+  reviewCount     Int?
+  latitude        Float?
+  longitude       Float?
+  /// { instagram?: string, facebook?: string, tiktok?: string, ... }
+  socialLinks     Json             @default("{}")
+  source          LeadSource       @default(MANUAL)
+  /// Normalized identity used for duplicate detection.
+  dedupeKey       String           @unique
+  phoneNormalized String?
+  websiteDomain   String?
+  notes           String?
+  assigneeId      String?
+  assignee        TeamMember?      @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  statusChangedAt DateTime         @default(now())
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  analyses     LeadAnalysis[]
+  activities   LeadActivity[]
+  approvals    Approval[]
+  project      Project?
+  websites     Website[]
+  workflowRuns WorkflowRun[]
+
+  @@index([status])
+  @@index([category])
+  @@index([city])
+  @@index([score])
+  @@index([phoneNormalized])
+  @@index([websiteDomain])
+}
+
+model LeadAnalysis {
+  id                     String       @id @default(cuid())
+  leadId                 String
+  lead                   Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  businessProfile        String
+  websiteStatus          ProspectType
+  websiteQualityScore    Int?
+  mobileScore            Int?
+  seoScore               Int?
+  performanceScore       Int?
+  opportunity            String?
+  recommendedWebsiteType String?
+  recommendedFeatures    String[]
+  designDirection        String?
+  priority               Priority
+  leadScore              Int
+  model                  String?
+  raw                    Json?
+  createdAt              DateTime     @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+model LeadActivity {
+  id         String      @id @default(cuid())
+  leadId     String
+  lead       Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  /// created | updated | status_changed | assigned | note | approval_requested | approval_decided | duplicate_blocked
+  type       String
+  fromStatus LeadStatus?
+  toStatus   LeadStatus?
+  message    String
+  actor      String      @default("system")
+  metadata   Json        @default("{}")
+  createdAt  DateTime    @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+model Approval {
+  id           String         @id @default(cuid())
+  action       ApprovalAction
+  status       ApprovalStatus @default(PENDING)
+  leadId       String?
+  lead         Lead?          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  projectId    String?
+  project      Project?       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  websiteId    String?
+  website      Website?       @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  summary      String
+  payload      Json           @default("{}")
+  requestedBy  String         @default("system")
+  decidedBy    String?
+  decisionNote String?
+  createdAt    DateTime       @default(now())
+  decidedAt    DateTime?
+
+  @@index([status, createdAt])
+  @@index([leadId])
+}
+
+model Project {
+  id              String        @id @default(cuid())
+  leadId          String        @unique
+  lead            Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  name            String
+  status          ProjectStatus @default(PLANNED)
+  clickupSpaceId  String?
+  clickupFolderId String?
+  clickupListId   String?
+  clickupUrl      String?
+  clickupSyncedAt DateTime?
+  startDate       DateTime      @default(now())
+  dueDate         DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tasks        ProjectTask[]
+  websites     Website[]
+  approvals    Approval[]
+  workflowRuns WorkflowRun[]
+}
+
+model ProjectTask {
+  id                 String     @id @default(cuid())
+  projectId          String
+  project            Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// Stable template key, e.g. "business-research".
+  key                String
+  order              Int
+  title              String
+  description        String
+  priority           Priority
+  status             TaskStatus @default(TODO)
+  dueDate            DateTime?
+  assignedAgent      AgentKind?
+  /// Template keys of tasks that must finish first.
+  dependsOn          String[]
+  acceptanceCriteria String[]
+  clickupTaskId      String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@unique([projectId, key])
+  @@index([projectId, order])
+}
+
+model Website {
+  id               String           @id @default(cuid())
+  leadId           String
+  lead             Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  projectId        String?
+  project          Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  industry         BusinessCategory
+  githubRepo       String?
+  previewUrl       String?
+  productionUrl    String?
+  vercelProjectId  String?
+  deploymentStatus DeploymentStatus @default(NOT_DEPLOYED)
+  qaReport         Json?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  approvals        Approval[]
+
+  @@index([deploymentStatus])
+}
+
+/// Execution history for agents and automated workflows.
+model WorkflowRun {
+  id         String     @id @default(cuid())
+  /// e.g. "lead.discovery", "lead.analysis", "project.clickup-sync"
+  kind       String
+  agent      AgentKind?
+  status     RunStatus  @default(QUEUED)
+  leadId     String?
+  lead       Lead?      @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  projectId  String?
+  project    Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  input      Json       @default("{}")
+  output     Json?
+  error      String?
+  attempts   Int        @default(0)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime   @default(now())
+
+  events WorkflowEvent[]
+  jobs   Job[]
+
+  @@index([kind, createdAt])
+  @@index([agent, createdAt])
+  @@index([status])
+}
+
+model WorkflowEvent {
+  id        String      @id @default(cuid())
+  runId     String
+  run       WorkflowRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  level     LogLevel    @default(INFO)
+  message   String
+  data      Json        @default("{}")
+  createdAt DateTime    @default(now())
+
+  @@index([runId, createdAt])
+}
+
+/// Postgres-backed background job queue (claimed with FOR UPDATE SKIP LOCKED).
+model Job {
+  id          String       @id @default(cuid())
+  type        String
+  payload     Json         @default("{}")
+  status      JobStatus    @default(PENDING)
+  runAt       DateTime     @default(now())
+  attempts    Int          @default(0)
+  maxAttempts Int          @default(5)
+  lastError   String?
+  lockedAt    DateTime?
+  lockedBy    String?
+  /// Optional idempotency key: the same key is never enqueued twice while active.
+  dedupeKey   String?      @unique
+  runId       String?
+  run         WorkflowRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([status, runAt])
+}
